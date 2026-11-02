@@ -74,10 +74,10 @@ export-env {
     let path_name = if (has-env 'Path') { 'Path' } else { 'PATH' }
     let venv_path = ([$virtual_env $bin] | path join)
     let new_path = ($env | get $path_name | prepend $venv_path)
-    let virtual_env_prompt = if ('{{ VIRTUAL_PROMPT }}' | is-empty) {
+    let virtual_env_prompt = if ("{{ VIRTUAL_PROMPT }}" | is-empty) {
         ($virtual_env | path basename)
     } else {
-        '{{ VIRTUAL_PROMPT }}'
+        "{{ VIRTUAL_PROMPT }}"
     }
     let new_env = { $path_name: $new_path VIRTUAL_ENV: $virtual_env VIRTUAL_ENV_PROMPT: $virtual_env_prompt }
     let old_prompt_command = if (has-env 'PROMPT_COMMAND') { $env.PROMPT_COMMAND } else { '' }

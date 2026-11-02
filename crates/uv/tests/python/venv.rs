@@ -2177,6 +2177,474 @@ fn create_venv_apostrophe() {
     assert_eq!(stdout.trim(), venv_dir.to_string_lossy());
 }
 
+/// A quote in `--prompt` used to end the quoted literal in the activation scripts, which turned
+/// the rest of the value into commands run by `source`.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
+#[test]
+fn venv_prompt_with_quotes_is_escaped() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = "x'; touch /tmp/PWNED; set x '";
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    let scripts = if cfg!(windows) {
+        context.venv.child("Scripts")
+    } else {
+        context.venv.child("bin")
+    };
+
+    // `fish` reads `\'` as a literal quote inside single quotes, so the value keeps its quotes
+    // escaped in place.
+    let activate_fish = scripts.child("activate.fish");
+    activate_fish.assert(predicates::str::contains(
+        r"if test -n 'x\'; touch /tmp/PWNED; set x \'",
+    ));
+    activate_fish.assert(predicates::str::contains(
+        r"set -gx VIRTUAL_ENV_PROMPT 'x\'; touch /tmp/PWNED; set x \'",
+    ));
+
+    // A single quote cannot be escaped at all in a POSIX shell, so the value is split around it
+    // and the quote is spliced in through a double-quoted segment.
+    let activate_sh = scripts.child("activate");
+    activate_sh.assert(predicates::str::contains(
+        r#"VIRTUAL_ENV_PROMPT='x'"'"'; touch /tmp/PWNED; set x '"'"''"#,
+    ));
+
+    // `csh` splits the quote out the same way, and additionally writes the history character as
+    // `\!` because it substitutes `!` before it removes the quotes.
+    let activate_csh = scripts.child("activate.csh");
+    activate_csh.assert(predicates::str::contains(
+        r#"setenv VIRTUAL_ENV_PROMPT 'x'"'"'; touch /tmp/PWNED; set x '"'"''"#,
+    ));
+
+    // PowerShell has no escape character in single quotes and writes a literal quote twice.
+    let activate_ps1 = scripts.child("activate.ps1");
+    activate_ps1.assert(predicates::str::contains(
+        r"$env:VIRTUAL_ENV_PROMPT = 'x''; touch /tmp/PWNED; set x '''",
+    ));
+}
+
+/// Sourcing the POSIX `activate` script with a prompt that quotes out of its literal must not run
+/// the payload, and the prompt still has to be readable from the environment.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
+#[test]
+#[cfg(unix)]
+fn activate_posix_prompt_with_double_quote() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = r#"x"; touch PWNED; "#;
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    uv_snapshot!(context.filters(), context.external_command("bash")
+        .arg("-c")
+        .arg(r#". .venv/bin/activate && printf '[%s]\n' "$VIRTUAL_ENV_PROMPT""#), @r#"
+    exit_code: 0 (success)
+    ----- stdout -----
+    [x"; touch PWNED; ]
+    "#);
+
+    context
+        .temp_dir
+        .child("PWNED")
+        .assert(predicates::path::missing());
+}
+
+/// Sourcing `activate.fish` with the prompt from the issue report must not run the payload, and
+/// the prompt still has to be readable from the environment.
+///
+/// Requires `fish` on `PATH`, so the sourcing check is a no-op on machines (including our CI
+/// images) that do not have it; the generated contents are asserted regardless.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
+#[test]
+#[cfg(unix)]
+fn activate_fish_prompt_with_single_quote() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = "x'; touch PWNED; set x '";
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    let activate_fish = context.venv.child("bin").child("activate.fish");
+    activate_fish.assert(predicates::str::contains(
+        r"set -gx VIRTUAL_ENV_PROMPT 'x\'; touch PWNED; set x \'",
+    ));
+
+    let Ok(fish) = which::which("fish") else {
+        return;
+    };
+
+    uv_snapshot!(context.filters(), context.external_command(fish)
+        .arg("--no-config")
+        .arg("-c")
+        .arg(r"source .venv/bin/activate.fish; printf '[%s]\n' $VIRTUAL_ENV_PROMPT"), @"
+    exit_code: 0 (success)
+    ----- stdout -----
+    [x'; touch PWNED; set x ']
+    ");
+
+    context
+        .temp_dir
+        .child("PWNED")
+        .assert(predicates::path::missing());
+}
+
+/// A double quote in `--prompt` used to end the quoted literal in the scripts that read the value
+/// with a double-quoted literal, which turned the rest of the value into commands.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
+#[test]
+fn venv_prompt_with_double_quotes_is_escaped() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = r#"x"; touch /tmp/PWNED; set x "#;
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    let scripts = if cfg!(windows) {
+        context.venv.child("Scripts")
+    } else {
+        context.venv.child("bin")
+    };
+
+    // Nushell single quotes cannot contain a quote at all, so the literal is double-quoted and the
+    // value escapes the backslash before the quote.
+    let activate_nu = scripts.child("activate.nu");
+    activate_nu.assert(predicates::str::contains(
+        r#"let virtual_env_prompt = if ("x\"; touch /tmp/PWNED; set x " | is-empty) {"#,
+    ));
+
+    // The value is the argument of a Python string literal that the interpreter compiles.
+    let activate_this = scripts.child("activate_this.py");
+    activate_this.assert(predicates::str::contains(
+        r#"os.environ["VIRTUAL_ENV_PROMPT"] = "x\"; touch /tmp/PWNED; set x " or os.path.basename(base)"#,
+    ));
+
+    // `cmd` has no escape character for a quote inside `set "NAME=VALUE"`, so the quotes are
+    // dropped and the rest of the value stays inside the protection they provide. No `cmd` runs
+    // this script on the machines these tests execute on.
+    let activate_bat = scripts.child("activate.bat");
+    activate_bat.assert(predicates::str::contains(
+        r#"@set "VIRTUAL_ENV_PROMPT=x; touch /tmp/PWNED; set x ""#,
+    ));
+}
+
+/// A percent sign in `--prompt` reached the variable expander that `cmd` runs before it parses the
+/// line, so the value could pull text from outside the quotes into the assignment.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
+#[test]
+fn venv_prompt_with_percent_is_escaped_in_batch() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = "%PROMPT%&calc";
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    let scripts = if cfg!(windows) {
+        context.venv.child("Scripts")
+    } else {
+        context.venv.child("bin")
+    };
+
+    // A batch file spells a literal percent with two of them. No `cmd` runs this script on the
+    // machines these tests execute on, so the generated line is the check.
+    scripts
+        .child("activate.bat")
+        .assert(predicates::str::contains(
+            r#"@set "VIRTUAL_ENV_PROMPT=%%PROMPT%%&calc""#,
+        ));
+}
+
+/// Sourcing `activate.csh` with a prompt that quotes out of its literal must not run the payload,
+/// and the prompt still has to be readable from the environment. A `!` in the value is the other
+/// `csh` hazard: history substitution happens before the quotes are removed.
+///
+/// Requires `tcsh` or `csh` on `PATH`, so the sourcing check is a no-op on machines (including our
+/// CI images) that do not have it; the generated contents are asserted regardless.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
+#[test]
+#[cfg(unix)]
+fn activate_csh_prompt_with_single_quote() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = r"x'; touch PWNED; set a!b '";
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    context
+        .venv
+        .child("bin")
+        .child("activate.csh")
+        .assert(predicates::str::contains(
+            r#"setenv VIRTUAL_ENV_PROMPT 'x'"'"'; touch PWNED; set a\!b '"'"''"#,
+        ));
+
+    let Ok(csh) = which::which("tcsh").or_else(|_| which::which("csh")) else {
+        return;
+    };
+
+    uv_snapshot!(context.filters(), context.external_command(csh)
+        .arg("-c")
+        .arg(r"source .venv/bin/activate.csh; echo prompt=[$VIRTUAL_ENV_PROMPT]"), @"
+    exit_code: 0 (success)
+    ----- stdout -----
+    prompt=[x'; touch PWNED; set a!b ']
+    ");
+
+    context
+        .temp_dir
+        .child("PWNED")
+        .assert(predicates::path::missing());
+}
+
+/// Sourcing `activate.nu` with a prompt that quotes out of its literal must not run the payload,
+/// and the prompt still has to be readable from the environment. Nushell cannot escape a single
+/// quote inside single quotes at all, so the literal the script writes for the value is a
+/// double-quoted one.
+///
+/// Requires `nu` on `PATH`, so the sourcing check is a no-op on machines (including our CI images)
+/// that do not have it; the generated contents are asserted regardless.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
+#[test]
+#[cfg(unix)]
+fn activate_nushell_prompt_with_single_quote() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = r"x'; touch PWNED; x '";
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    context
+        .venv
+        .child("bin")
+        .child("activate.nu")
+        .assert(predicates::str::contains(
+            r#"let virtual_env_prompt = if ("x'; touch PWNED; x '" | is-empty) {"#,
+        ));
+
+    let Ok(nu) = which::which("nu") else {
+        return;
+    };
+
+    uv_snapshot!(context.filters(), context.external_command(nu)
+        .arg("--no-config-file")
+        .arg("-c")
+        .arg(r"overlay use .venv/bin/activate.nu; print $'prompt=[($env.VIRTUAL_ENV_PROMPT)]'"), @"
+    exit_code: 0 (success)
+    ----- stdout -----
+    prompt=[x'; touch PWNED; x ']
+    ");
+
+    context
+        .temp_dir
+        .child("PWNED")
+        .assert(predicates::path::missing());
+}
+
+/// Sourcing `activate.ps1` with a prompt that quotes out of its literal must neither run the
+/// payload nor expand the `$(...)` that a double-quoted PowerShell literal would substitute.
+///
+/// Requires `pwsh` on `PATH`, so the sourcing check is a no-op on machines (including our CI
+/// images) that do not have it; the generated contents are asserted regardless.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
+#[test]
+#[cfg(unix)]
+fn activate_powershell_prompt_with_single_quote() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = r"x'$(Set-Content -Path PWNED -Value 1)'";
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    context
+        .venv
+        .child("bin")
+        .child("activate.ps1")
+        .assert(predicates::str::contains(
+            r"$env:VIRTUAL_ENV_PROMPT = 'x''$(Set-Content -Path PWNED -Value 1)'''",
+        ));
+
+    let Ok(pwsh) = which::which("pwsh") else {
+        return;
+    };
+
+    uv_snapshot!(context.filters(), context.external_command(pwsh)
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-Command")
+        .arg(r#". .venv/bin/activate.ps1; "prompt=[$env:VIRTUAL_ENV_PROMPT]""#), @r#"
+    exit_code: 0 (success)
+    ----- stdout -----
+    prompt=[x'$(Set-Content -Path PWNED -Value 1)']
+    "#);
+
+    context
+        .temp_dir
+        .child("PWNED")
+        .assert(predicates::path::missing());
+}
+
+/// Running `activate_this.py` with a prompt that ends its string literal must not execute the
+/// rest of the value, since the file is compiled and run by an interpreter.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
+#[test]
+#[cfg(unix)]
+fn activate_this_py_prompt_with_double_quote() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = r#"x"; import os; os.system("touch PWNED"); y=""#;
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    let python = context.venv.child("bin").child("python");
+
+    uv_snapshot!(context.filters(), context.external_command(&python)
+        .arg("-c")
+        .arg(r"import os, runpy; runpy.run_path(os.path.join('.venv', 'bin', 'activate_this.py')); print('prompt=[' + os.environ['VIRTUAL_ENV_PROMPT'] + ']')"), @r#"
+    exit_code: 0 (success)
+    ----- stdout -----
+    prompt=[x"; import os; os.system("touch PWNED"); y="]
+    "#);
+
+    context
+        .temp_dir
+        .child("PWNED")
+        .assert(predicates::path::missing());
+}
+
+/// A command substitution in `--prompt` used to run when the POSIX `activate` script assigned it,
+/// because the value was spliced into a double-quoted literal. The single-quoted literal the
+/// script uses now keeps the value out of the shell's command parser at source time; the value
+/// still reaches `PS1`, where a shell that substitutes its prompt expands it again.
+///
+/// Requires `zsh` on `PATH`, so the sourcing check is a no-op on machines (including our CI
+/// images) that do not have it; the generated contents are asserted regardless.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23059>
+#[test]
+#[cfg(unix)]
+fn activate_posix_prompt_with_command_substitution() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = r"x$(touch PWNED)y";
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    context
+        .venv
+        .child("bin")
+        .child("activate")
+        .assert(predicates::str::contains(
+            r"VIRTUAL_ENV_PROMPT='x$(touch PWNED)y'",
+        ));
+
+    let Ok(zsh) = which::which("zsh") else {
+        return;
+    };
+
+    uv_snapshot!(context.filters(), context.external_command(zsh)
+        .arg("-c")
+        .arg(r#"setopt PROMPT_SUBST; . .venv/bin/activate; print -r -- "prompt=[$VIRTUAL_ENV_PROMPT]""#), @r#"
+    exit_code: 0 (success)
+    ----- stdout -----
+    prompt=[x$(touch PWNED)y]
+    "#);
+
+    context
+        .temp_dir
+        .child("PWNED")
+        .assert(predicates::path::missing());
+}
+
 /// Emulate a ksh without ksh93's `${.sh.file}` parameter using a POSIX shell.
 #[test]
 #[cfg(unix)]

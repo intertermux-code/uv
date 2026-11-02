@@ -6,7 +6,12 @@ mod windows;
 
 pub use configuration::{ConfigurationUpdate, update_configuration_file};
 pub use runnable::WindowsRunnable;
-pub use shlex::{escape_posix_for_single_quotes, shlex_posix, shlex_windows};
+pub use shlex::{
+    escape_cmd_for_quoted_set, escape_csh_for_single_quotes, escape_fish_for_single_quotes,
+    escape_nushell_for_double_quotes, escape_posix_for_single_quotes,
+    escape_powershell_for_single_quotes, escape_python_for_double_quotes, shlex_posix,
+    shlex_windows,
+};
 #[cfg(windows)]
 pub use windows::prepend_path;
 

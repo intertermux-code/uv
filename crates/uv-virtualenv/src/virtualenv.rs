@@ -22,7 +22,11 @@ use uv_python_interpreter::{Interpreter, VirtualEnvironment};
 use uv_python_managed::{
     PythonExecutable, PythonMinorVersionLink, UpgradePolicy, replace_link_to_executable,
 };
-use uv_shell::escape_posix_for_single_quotes;
+use uv_shell::{
+    escape_cmd_for_quoted_set, escape_csh_for_single_quotes, escape_fish_for_single_quotes,
+    escape_nushell_for_double_quotes, escape_posix_for_single_quotes,
+    escape_powershell_for_single_quotes, escape_python_for_double_quotes,
+};
 use uv_version::version;
 
 /// Activation scripts for the environment, with dependent paths templated out.
@@ -514,6 +518,16 @@ pub(crate) fn create(
                 r#"b"{}".decode("utf-8")"#,
                 virtual_prompt.as_bytes().escape_ascii(),
             )),
+            // The prompt is spliced into a quoted literal, so it has to follow the quoting rules of
+            // the shell that reads the script; otherwise a quote in the value ends the literal early
+            // and the rest of the value is parsed as code when the script is sourced.
+            "activate" => escape_posix_for_single_quotes(virtual_prompt),
+            "activate.csh" => escape_csh_for_single_quotes(virtual_prompt),
+            "activate.fish" => Cow::Owned(escape_fish_for_single_quotes(virtual_prompt)),
+            "activate.nu" => escape_nushell_for_double_quotes(virtual_prompt),
+            "activate.ps1" => escape_powershell_for_single_quotes(virtual_prompt),
+            "activate.bat" => escape_cmd_for_quoted_set(virtual_prompt),
+            "activate_this.py" => Cow::Owned(escape_python_for_double_quotes(virtual_prompt)),
             _ => Cow::Borrowed(virtual_prompt),
         };
 
