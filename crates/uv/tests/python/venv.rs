@@ -2177,6 +2177,127 @@ fn create_venv_apostrophe() {
     assert_eq!(stdout.trim(), venv_dir.to_string_lossy());
 }
 
+/// A quote in `--prompt` used to end the quoted literal in the activation scripts, which turned
+/// the rest of the value into commands run by `source`.
+#[test]
+fn venv_prompt_with_quotes_is_escaped() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = "x'; touch /tmp/PWNED; set x '";
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    let scripts = if cfg!(windows) {
+        context.venv.child("Scripts")
+    } else {
+        context.venv.child("bin")
+    };
+
+    // `fish` reads `\'` as a literal quote inside single quotes, so the value keeps its quotes
+    // escaped in place.
+    let activate_fish = scripts.child("activate.fish");
+    activate_fish.assert(predicates::str::contains(
+        r"if test -n 'x\'; touch /tmp/PWNED; set x \'",
+    ));
+    activate_fish.assert(predicates::str::contains(
+        r"set -gx VIRTUAL_ENV_PROMPT 'x\'; touch /tmp/PWNED; set x \'",
+    ));
+
+    // A single quote cannot be escaped at all in a POSIX shell, so the value is split around it
+    // and the quote is spliced in through a double-quoted segment.
+    let activate_sh = scripts.child("activate");
+    activate_sh.assert(predicates::str::contains(
+        r#"VIRTUAL_ENV_PROMPT='x'"'"'; touch /tmp/PWNED; set x '"'"''"#,
+    ));
+}
+
+/// Sourcing the POSIX `activate` script with a prompt that quotes out of its literal must not run
+/// the payload, and the prompt still has to be readable from the environment.
+#[test]
+#[cfg(unix)]
+fn activate_posix_prompt_with_double_quote() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = r#"x"; touch PWNED; "#;
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    uv_snapshot!(context.filters(), context.external_command("bash")
+        .arg("-c")
+        .arg(r#". .venv/bin/activate && printf '[%s]\n' "$VIRTUAL_ENV_PROMPT""#), @r#"
+    exit_code: 0 (success)
+    ----- stdout -----
+    [x"; touch PWNED; ]
+    "#);
+
+    context
+        .temp_dir
+        .child("PWNED")
+        .assert(predicates::path::missing());
+}
+
+/// Sourcing `activate.fish` with the prompt from the issue report must not run the payload, and
+/// the prompt still has to be readable from the environment.
+///
+/// Requires `fish` on `PATH`, so the sourcing check is a no-op on machines (including our CI
+/// images) that do not have it; the generated contents are asserted regardless.
+#[test]
+#[cfg(unix)]
+fn activate_fish_prompt_with_single_quote() {
+    let context = uv_test::test_context!("3.12");
+    let prompt = "x'; touch PWNED; set x '";
+
+    context
+        .venv()
+        .arg(context.venv.as_os_str())
+        .arg("--python")
+        .arg("3.12")
+        .arg("--prompt")
+        .arg(prompt)
+        .arg("--clear")
+        .assert()
+        .success();
+
+    let activate_fish = context.venv.child("bin").child("activate.fish");
+    activate_fish.assert(predicates::str::contains(
+        r"set -gx VIRTUAL_ENV_PROMPT 'x\'; touch PWNED; set x \'",
+    ));
+
+    let Ok(fish) = which::which("fish") else {
+        return;
+    };
+
+    uv_snapshot!(context.filters(), context.external_command(fish)
+        .arg("--no-config")
+        .arg("-c")
+        .arg(r"source .venv/bin/activate.fish; printf '[%s]\n' $VIRTUAL_ENV_PROMPT"), @"
+    exit_code: 0 (success)
+    ----- stdout -----
+    [x'; touch PWNED; set x ']
+    ");
+
+    context
+        .temp_dir
+        .child("PWNED")
+        .assert(predicates::path::missing());
+}
+
 /// Emulate a ksh without ksh93's `${.sh.file}` parameter using a POSIX shell.
 #[test]
 #[cfg(unix)]

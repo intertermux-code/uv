@@ -37,6 +37,16 @@ pub fn escape_posix_for_single_quotes(string: &str) -> Cow<'_, str> {
     }
 }
 
+/// Escape a string for being used in single quotes in a `fish` command.
+///
+/// `fish` single quotes are not POSIX single quotes: inside `'...'`, `fish` honors `\'` and `\\`
+/// as escapes and treats every other character literally, so a single quote cannot be quoted out
+/// of the string the way it can in a POSIX shell. Escaping the backslash first, then the quote,
+/// keeps a value like `x\'$(touch PWNED)'` from ending the literal early.
+pub fn escape_fish_for_single_quotes(string: &str) -> String {
+    string.replace('\\', r"\\").replace('\'', r"\'")
+}
+
 /// Quote a path, if necessary, for safe use in `PowerShell` and `cmd`.
 pub fn shlex_windows(executable: impl AsRef<Path>, shell: Shell) -> String {
     // Convert to a display path.
@@ -58,7 +68,35 @@ pub fn shlex_windows(executable: impl AsRef<Path>, shell: Shell) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::shlex_posix;
+    use super::{escape_fish_for_single_quotes, escape_posix_for_single_quotes, shlex_posix};
+
+    #[test]
+    fn fish_plain_value() {
+        assert_eq!(escape_fish_for_single_quotes("venv"), "venv");
+    }
+
+    #[test]
+    fn fish_quote_ends_the_literal() {
+        assert_eq!(
+            escape_fish_for_single_quotes(r"x'; touch /tmp/PWNED; set x '"),
+            r"x\'; touch /tmp/PWNED; set x \'"
+        );
+    }
+
+    #[test]
+    fn fish_backslash_before_quote() {
+        // A backslash directly before the quote would otherwise pair up with it and leave the
+        // closing quote unconsumed.
+        assert_eq!(escape_fish_for_single_quotes(r"x\'"), r"x\\\'");
+    }
+
+    #[test]
+    fn posix_quote_ends_the_literal() {
+        assert_eq!(
+            escape_posix_for_single_quotes(r"x'; touch /tmp/PWNED; set x '"),
+            r#"x'"'"'; touch /tmp/PWNED; set x '"'"'"#
+        );
+    }
 
     #[test]
     fn posix_safe_path() {

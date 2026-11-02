@@ -22,7 +22,7 @@ use uv_python_interpreter::{Interpreter, VirtualEnvironment};
 use uv_python_managed::{
     PythonExecutable, PythonMinorVersionLink, UpgradePolicy, replace_link_to_executable,
 };
-use uv_shell::escape_posix_for_single_quotes;
+use uv_shell::{escape_fish_for_single_quotes, escape_posix_for_single_quotes};
 use uv_version::version;
 
 /// Activation scripts for the environment, with dependent paths templated out.
@@ -514,6 +514,11 @@ pub(crate) fn create(
                 r#"b"{}".decode("utf-8")"#,
                 virtual_prompt.as_bytes().escape_ascii(),
             )),
+            // The prompt is spliced into a quoted literal, so it has to follow the quoting rules of
+            // the shell that reads the script; otherwise a quote in the value ends the literal early
+            // and the rest of the value is parsed as code when the script is sourced.
+            "activate.fish" => Cow::Owned(escape_fish_for_single_quotes(virtual_prompt)),
+            "activate" => escape_posix_for_single_quotes(virtual_prompt),
             _ => Cow::Borrowed(virtual_prompt),
         };
 
