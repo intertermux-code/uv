@@ -2179,6 +2179,8 @@ fn create_venv_apostrophe() {
 
 /// A quote in `--prompt` used to end the quoted literal in the activation scripts, which turned
 /// the rest of the value into commands run by `source`.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
 #[test]
 fn venv_prompt_with_quotes_is_escaped() {
     let context = uv_test::test_context!("3.12");
@@ -2221,6 +2223,8 @@ fn venv_prompt_with_quotes_is_escaped() {
 
 /// Sourcing the POSIX `activate` script with a prompt that quotes out of its literal must not run
 /// the payload, and the prompt still has to be readable from the environment.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
 #[test]
 #[cfg(unix)]
 fn activate_posix_prompt_with_double_quote() {
@@ -2257,6 +2261,8 @@ fn activate_posix_prompt_with_double_quote() {
 ///
 /// Requires `fish` on `PATH`, so the sourcing check is a no-op on machines (including our CI
 /// images) that do not have it; the generated contents are asserted regardless.
+///
+/// Regression test for: <https://github.com/astral-sh/uv/issues/23060>
 #[test]
 #[cfg(unix)]
 fn activate_fish_prompt_with_single_quote() {
